@@ -72,6 +72,15 @@ function currentMood() {
 }
 const mood = currentMood()
 
+// 首次启动：没有人设就拿示例顶上，并落成正式的 人设.md
+const EXAMPLE = join(PATHS.root, '人格', '人设.example.md')
+try {
+  if (!existsSync(PATHS.persona) && existsSync(EXAMPLE)) {
+    copyFileSync(EXAMPLE, PATHS.persona)
+    console.log('· 没有 人设.md，已从 人设.example.md 生成一份（可以改）')
+  }
+} catch {}
+
 const persona = readOr(PATHS.persona, '你是 ta 的伙伴，不是助手。说话短、热、像在手机上打字。')
 
 let memoryGuide = fillPaths(readOr(PATHS.memoryGuide, ''))
