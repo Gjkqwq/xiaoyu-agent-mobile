@@ -36,8 +36,8 @@ class Prefs(context: Context) {
 
     /** 我的 ID / 昵称 —— 她也知道这个名字。 */
     var myName: String
-        get() = sp.getString("myName", "JK") ?: "JK"
-        set(v) = sp.edit().putString("myName", v.trim().ifBlank { "JK" }).apply()
+        get() = sp.getString("myName", "我") ?: "我"
+        set(v) = sp.edit().putString("myName", v.trim().ifBlank { "我" }).apply()
 
     var herName: String
         get() = sp.getString("herName", "小鱼") ?: "小鱼"
