@@ -2,9 +2,9 @@
 
 <img src="docs/banner.png" alt="小鱼 · 手机版" width="100%">
 
-# 小鱼 · 手机版
+# Xiaoyu Agent Mobile · 小鱼
 
-**把电脑上的 AI agent，装进你的口袋。**
+**Xiaoyu Agent Mobile — 把电脑上的 AI agent，装进你的口袋。**
 
 不是又一个套壳聊天机器人 —— 手机上的每一句话，都进你本机的 agent：
 它能读写文件、跑命令、翻你自己的记忆，还能把做好的 PPT 和代码直接发到你手机上。
