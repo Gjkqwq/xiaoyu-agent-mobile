@@ -166,6 +166,10 @@ object Bridge {
         val c = conn(prefs, "/upload", "POST", 180_000).apply {
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            // 显式给出长度（而不是 chunked）：Cloudflare 隧道对 chunked POST 更挑剔
+            try {
+                setFixedLengthStreamingMode(body.toByteArray(Charsets.UTF_8).size)
+            } catch (_: Exception) {}
         }
         try {
             c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
@@ -173,8 +177,12 @@ object Bridge {
             val raw = (if (code in 200..299) c.inputStream else c.errorStream)
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
             if (code !in 200..299) {
+                if (code == 502 || code == 503 || code == 504) {
+                    throw IOException("上传失败 $code（隧道/网关拦截，请求没到电脑。换个网络或改用局域网地址再试）")
+                }
                 val msg = runCatching { JSONObject(raw).optString("error") }.getOrDefault("")
-                throw IOException("上传失败 $code" + if (msg.isNotBlank()) "：$msg" else "")
+                val snippet = raw.take(120).replace("\n", " ")
+                throw IOException("上传失败 $code" + (if (msg.isNotBlank()) "：$msg" else "：$snippet"))
             }
             val path = JSONObject(raw).optString("path")
             if (path.isBlank()) throw IOException("服务没给路径")

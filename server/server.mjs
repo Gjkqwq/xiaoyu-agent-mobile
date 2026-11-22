@@ -30,6 +30,103 @@ import { appendTurn, listDays, countTurns } from './memory.mjs'
 const MAX_TEXT = 8000
 const busy = new Set()
 
+/* ── 任务队列：让 ta 可以连着发，不用等 ──
+ * 之前是一条一条串行阻塞，发完得等回复。
+ * 现在 /say 立刻返回，任务排队；回复先进 inbox，App 轮询取走。
+ */
+// seq 用时间戳起步：服务重启也不会回退，App 记住的 since 永远追得上
+const jobs = { queue: [], running: null, inbox: [], seq: Date.now(), pending: 0 }
+let activeChild = null
+let stopRequestedAt = 0   // 最近一次主动打断的时间戳，用来区分“被打断”和“真出错”
+const children = new Set() // 我们 spawn 过的所有 dsh 子进程
+
+/* ── 中途提问：她卡在「要 ta 决定」的地方时，停下来问一句 ──
+ * 流程：她跑 ask.mjs → POST /ask 建一条问题 → App 收到卡片 → ta 点一个选项
+ *      → POST /answer 写入 → 她那边 long-poll 拿到答案，继续干活。
+ */
+const asks = new Map()      // id -> { id, question, options, answer, at, done }
+let askSeq = 0
+
+/** 真的把 dsh 进程树杀掉（Windows 上 kill 只管父进程） */
+function killTree(child) {
+  if (!child || !child.pid) return
+  // 必须异步：spawnSync 会阻塞事件循环，taskkill 一卡整个服务就没响应
+  try {
+    spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+  } catch {}
+  try {
+    setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 1500)
+  } catch {}
+}
+
+/** 把工具调用翻译成人话，给手机上的状态气泡用 */
+function describeTool(tool, input) {
+  const t = String(tool || '')
+  const inp = input || {}
+  const cut = (s, n = 34) => {
+    const x = String(s || '').replace(/\s+/g, ' ').trim()
+    return x.length > n ? x.slice(0, n) + '…' : x
+  }
+  if (/^(bash|pwsh|shell)$/i.test(t)) {
+    return { label: '正在运行命令', detail: cut(inp.command || inp.description || '') }
+  }
+  if (/fs.?search|grep|glob/i.test(t)) return { label: '正在翻文件', detail: cut(inp.pattern || inp.query || '') }
+  if (/^(fs|read)$/i.test(t)) return { label: '正在看文件', detail: cut(inp.path || inp.file_path || '') }
+  if (/write|edit/i.test(t)) return { label: '正在写文件', detail: cut(inp.path || inp.file_path || '') }
+  if (/web|fetch|search/i.test(t)) return { label: '正在上网查', detail: cut(inp.query || inp.url || '') }
+  if (/ask_user|question/i.test(t)) return { label: '正在问你', detail: cut(inp.question || '') }
+  if (/subagent|agent/i.test(t)) return { label: '正在派活', detail: cut(inp.description || '') }
+  if (/todo|goal/i.test(t)) return { label: '正在理计划', detail: '' }
+  return { label: '正在用 ' + (t || '工具'), detail: cut(inp.description || '') }
+}
+/** 队列里跑下一个 */
+async function pump(cfg) {
+  if (jobs.running) return
+  const job = jobs.queue.shift()
+  if (!job) return
+  jobs.running = job
+  job.startedAt = Date.now()
+  const t0 = Date.now()
+  try {
+    let out = await runChat(cfg, job.sessionId, job.text)
+    let split = splitParts(out.reply, cfg)
+    if (!split.text && split.parts.length === 0) {
+      log('· 回复是空的（标记没解析出来），重试一次')
+      out = await runChat(cfg, out.sessionId, job.text)
+      split = splitParts(out.reply, cfg)
+    }
+    const finalText = split.text || (split.parts.length ? '' : '嗯……我在呢。')
+    appendSharedLog('小鱼', finalText || '[表情]')
+    log('←', out.sessionId, Math.round((Date.now() - t0) / 1000) + 's', (finalText || '[表情]').slice(0, 50))
+    jobs.seq += 1
+    jobs.inbox.push({
+      seq: jobs.seq,
+      id: job.id,
+      reply: finalText,
+      parts: split.parts,
+      sessionId: out.sessionId,
+      ms: Date.now() - t0,
+    })
+  } catch (e) {
+    const stopped = String(e.message || '').includes('已打断') || job.stopped
+    log(stopped ? '· 已打断' : '!', String(e.message).slice(0, 150))
+    jobs.seq += 1
+    jobs.inbox.push({
+      seq: jobs.seq,
+      id: job.id,
+      reply: stopped ? '（停下了，你说。）' : '⚠️ ' + String(e.message).slice(0, 300),
+      parts: [],
+      sessionId: job.sessionId,
+      error: !stopped,
+    })
+  } finally {
+    jobs.running = null
+    // 只留最近 50 条，防止内存涨
+    if (jobs.inbox.length > 50) jobs.inbox = jobs.inbox.slice(-50)
+    setImmediate(() => pump(cfg))
+  }
+}
+
 function log(...args) {
   const t = new Date().toTimeString().slice(0, 8)
   console.log('[' + t + ']', ...args)
@@ -173,12 +270,21 @@ function runOnce(cfg, sessionId, text) {
       env,
       windowsHide: true,
     })
+    activeChild = child
+    children.add(child)
+    child.on('close', () => children.delete(child))
 
     let buf = ''
     let err = ''
     let sid = sessionId || ''
     let final = ''
     let streamed = ''
+    const setStep = (label, detail) => {
+      if (jobs.running) {
+        jobs.running.step = label
+        jobs.running.detail = detail
+      }
+    }
 
     const timer = setTimeout(() => {
       try {
@@ -203,6 +309,12 @@ function runOnce(cfg, sessionId, text) {
         if (ev.type === 'session' && ev.sessionId) sid = String(ev.sessionId)
         else if (ev.type === 'final' && typeof ev.text === 'string') final = ev.text
         else if (ev.type === 'text' && typeof ev.text === 'string') streamed += ev.text
+        else if (ev.type === 'thinking') setStep('正在想…', '')
+        else if (ev.type === 'status' && ev.phase === 'step_start') setStep('第 ' + (ev.step || 1) + ' 步', '')
+        else if (ev.type === 'tool_call') {
+          const s = describeTool(ev.tool, ev.input)
+          setStep(s.label, s.detail)
+        }
       }
     }
 
@@ -215,6 +327,7 @@ function runOnce(cfg, sessionId, text) {
       reject(e)
     })
     child.on('close', () => {
+      if (activeChild === child) activeChild = null
       clearTimeout(timer)
       eat('\n')
       const reply = String(final || streamed || '').trim()
@@ -518,6 +631,175 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /* ── 她来问问题 ── */
+  if (path === '/ask' && req.method === 'POST') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    let body
+    try {
+      body = JSON.parse((await readBody(req)) || '{}')
+    } catch {
+      return json(res, 400, { error: 'body 不是合法 JSON' })
+    }
+    const question = String(body.question || '').trim()
+    if (!question) return json(res, 400, { error: 'question 是空的' })
+    const options = Array.isArray(body.options)
+      ? body.options.map((x) => String(x).trim()).filter(Boolean).slice(0, 8)
+      : []
+    askSeq += 1
+    const id = 'q' + askSeq + '-' + Date.now().toString(36)
+    asks.set(id, { id, question, options, answer: null, at: Date.now(), done: false })
+    jobs.seq += 1
+    jobs.inbox.push({
+      seq: jobs.seq,
+      id,
+      type: 'question',
+      question,
+      options,
+      reply: question,
+      parts: [],
+      sessionId: '',
+    })
+    if (jobs.inbox.length > 50) jobs.inbox = jobs.inbox.slice(-50)
+    appendSharedLog('小鱼', '（在问）' + question + (options.length ? ' — 选项：' + options.join(' / ') : ''))
+    log('? 她在问', question.slice(0, 40))
+    return json(res, 200, { ok: true, id })
+  }
+
+  /* ── 等 ta 回答（long-poll，最多等 5 分钟） ── */
+  if (path === '/ask/wait' && req.method === 'GET') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    const id = String(url.searchParams.get('id') || '')
+    const q = asks.get(id)
+    if (!q) return json(res, 404, { error: '没有这个问题' })
+    const deadline = Date.now() + 300_000
+    while (Date.now() < deadline) {
+      if (q.done) return json(res, 200, { ok: true, answer: q.answer })
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    return json(res, 200, { ok: false, timeout: true, answer: '' })
+  }
+
+  /* ── ta 回答 ── */
+  if (path === '/answer' && req.method === 'POST') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    let body
+    try {
+      body = JSON.parse((await readBody(req)) || '{}')
+    } catch {
+      return json(res, 400, { error: 'body 不是合法 JSON' })
+    }
+    const id = String(body.id || '')
+    const answer = String(body.answer || '').trim()
+    const q = asks.get(id)
+    if (!q) return json(res, 404, { error: '没有这个问题' })
+    q.answer = answer
+    q.done = true
+    appendSharedLog('ta', '（回答）' + answer)
+    log('✓ ta 回答了', answer.slice(0, 40))
+    return json(res, 200, { ok: true })
+  }
+  /* ── 一键停机：杀掉正在跑的任务，然后退出服务 ── */
+  if (path === '/shutdown' && req.method === 'POST') {
+    log('■ 收到停机请求，正在停止…')
+    jobs.queue.length = 0
+    stopRequestedAt = Date.now()
+    if (jobs.running) jobs.running.stopped = true
+    for (const c of children) killTree(c)
+    children.clear()
+    activeChild = null
+    json(res, 200, { ok: true })
+    setTimeout(() => process.exit(0), 300)
+    return
+  }
+  /* ── 她主动插话：开工确认 / 进度播报 ── */
+  if (path === '/notify' && req.method === 'POST') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    let body
+    try { body = JSON.parse((await readBody(req)) || '{}') } catch { return json(res, 400, { error: 'bad json' }) }
+    const text = String(body.text || '').trim()
+    if (!text) return json(res, 400, { error: 'text 是空的' })
+    jobs.seq += 1
+    jobs.inbox.push({ seq: jobs.seq, id: 'n' + jobs.seq, reply: text, parts: [], sessionId: '', type: body.kind === 'step' ? 'step' : 'say' })
+    if (jobs.inbox.length > 50) jobs.inbox = jobs.inbox.slice(-50)
+    appendSharedLog('小鱼', text)
+    log('· 她说', text.slice(0, 40))
+    return json(res, 200, { ok: true })
+  }
+  /* ── 自由发送：立刻收下、排队跑、回复进收件箱 ── */
+  if (path === '/say' && req.method === 'POST') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    let body
+    try {
+      body = JSON.parse((await readBody(req)) || '{}')
+    } catch {
+      return json(res, 400, { error: 'body 不是合法 JSON' })
+    }
+    const text = String(body.text || '').trim()
+    if (!text) return json(res, 400, { error: 'text 是空的' })
+    if (text.length > MAX_TEXT) return json(res, 400, { error: '太长了' })
+    if (!cfg.dshExe || !existsSync(cfg.dshExe)) {
+      return json(res, 500, { error: '找不到 DSH，请在设置页里检查安装路径' })
+    }
+    // 带 interrupt 的：先把正在跑的那条打断，再说这句
+    if (body.interrupt && (jobs.running || jobs.queue.length)) {
+      const was = jobs.running ? jobs.running.text : ''
+      jobs.queue.length = 0
+      if (jobs.running) jobs.running.stopped = true
+      killTree(activeChild)
+      activeChild = null
+      log('■ 打断后插话', was.slice(0, 30), '→', text.slice(0, 30))
+    }
+    const id = 'j' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+    const job = { id, text, sessionId: String(body.sessionId || '').trim(), at: Date.now() }
+    jobs.queue.push(job)
+    appendSharedLog('ta', text)
+    log('→ 收下', '#' + id, text.slice(0, 40), '（队列 ' + jobs.queue.length + (jobs.running ? ' + 1 在跑' : '') + '）')
+    pump(cfg)
+    return json(res, 200, { ok: true, id, queued: jobs.queue.length, running: Boolean(jobs.running) })
+  }
+
+  if (path === '/inbox' && req.method === 'GET') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    const since = Number(url.searchParams.get('since') || 0)
+    const items = jobs.inbox.filter((x) => x.seq > since)
+    return json(res, 200, {
+      seq: jobs.seq,
+      items,
+      running: Boolean(jobs.running),
+      queued: jobs.queue.length,
+      status: jobs.running
+        ? {
+            task: String(jobs.running.text || '').slice(0, 40),
+            step: jobs.running.step || '正在想…',
+            detail: jobs.running.detail || '',
+            ms: Date.now() - (jobs.running.startedAt || Date.now()),
+          }
+        : null,
+    })
+  }
+
+  /* ── 打断：把正在跑的那条连进程树一起杀掉 ── */
+  if (path === '/stop' && req.method === 'POST') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    const had = Boolean(jobs.running) || jobs.queue.length > 0
+    const wasText = jobs.running ? jobs.running.text : ''
+    jobs.queue.length = 0
+    stopRequestedAt = Date.now()
+    if (jobs.running) jobs.running.stopped = true
+    killTree(activeChild)
+    activeChild = null
+    log('■ 打断', wasText ? wasText.slice(0, 40) : '（队列已清空）')
+    return json(res, 200, { ok: true, stopped: had })
+  }
+
+  if (path === '/state' && req.method === 'GET') {
+    if (!authed) return json(res, 401, { error: '口令不对' })
+    return json(res, 200, {
+      running: jobs.running ? { text: jobs.running.text.slice(0, 60), step: jobs.running.step || '', detail: jobs.running.detail || '', ms: Date.now() - (jobs.running.startedAt || Date.now()) } : null,
+      queued: jobs.queue.length,
+      seq: jobs.seq,
+    })
+  }
   if (path === '/chat' && req.method === 'POST') {
     if (!authed) return json(res, 401, { error: '口令不对' })
     let body
@@ -553,6 +835,11 @@ const server = createServer(async (req, res) => {
       log('←', out.sessionId, Math.round((Date.now() - t0) / 1000) + 's', (finalText || '[表情]').slice(0, 50))
       return json(res, 200, { reply: finalText, sessionId: out.sessionId, parts: split.parts })
     } catch (e) {
+      // 刚被主动打断：这不是错误，别让手机上看到红字
+      if (Date.now() - stopRequestedAt < 15000) {
+        log('· 已打断（不是错误）')
+        return json(res, 200, { reply: '（停下了，你说。）', sessionId: asked, parts: [] })
+      }
       log('!', String(e.message).slice(0, 150))
       return json(res, 502, { error: String(e.message).slice(0, 600) })
     } finally {
@@ -570,6 +857,19 @@ function countChatLogs() {
     return 0
   }
 }
+// 关窗口 / Ctrl+C 时，把正在跑的任务一起带走（否则它会变成孤儿进程继续跑）
+function bye(sig) {
+  for (const c of children) {
+    try {
+      spawn('taskkill', ['/PID', String(c.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    } catch {}
+  }
+  process.exit(0)
+}
+process.on('SIGINT', () => bye('SIGINT'))
+process.on('SIGBREAK', () => bye('SIGBREAK'))
+process.on('SIGHUP', () => bye('SIGHUP'))
+
 const startCfg = loadConfig()
 ensureOllama(startCfg).finally(() => {
 server.listen(startCfg.port, '0.0.0.0', () => {

@@ -208,45 +208,55 @@ private fun App(prefs: Prefs) {
         bannerOk = ok
     }
 
-    fun ask(prompt: String) {
-        if (sending) return
-        banner = null
-        sending = true
-        scope.launch {
-            try {
-                val res = Bridge.chat(prefs, prompt)
-                if (res.sessionId.isNotBlank()) prefs.sessionId = res.sessionId
-                for ((i, line) in splitReply(res.reply).withIndex()) {
+    // ── 新消息层：ChatEngine 负责收发，界面只显示 ──
+    val engine = remember { ChatEngine(scope, prefs) }
+    var busy by remember { mutableStateOf(false) }
+
+    val listener = object : ChatEngine.Listener {
+        override fun onReply(reply: String, parts: List<Part>, sessionId: String) {
+            scope.launch {
+                for ((i, line) in splitReply(reply).withIndex()) {
                     if (i > 0) delay(320L + Random.nextLong(0, 380))
                     messages.add(Msg(false, line))
                 }
-                for (part in res.parts) {
-                    val local = withContext(Dispatchers.IO) { savePart(prefs, part) }
+                for (part in parts) {
+                    val local: String? = withContext(Dispatchers.IO) { savePart(prefs, part) }
                     delay(260L)
                     when (part.kind) {
                         "sticker" -> messages.add(Msg(false, part.name, kind = MKind.STICKER, payload = local ?: ""))
                         "image" -> messages.add(Msg(false, part.name, kind = MKind.IMAGE, payload = local ?: ""))
                         else -> {
-                            // 文件：payload 存完整下载地址，点一下就能存到手机
-                            val dl = if (part.url.isNotBlank()) prefs.server.trimEnd('/') + part.url else ""
+                            val dl = if (part.url.isNotBlank()) prefs.server.trimEnd(0x27.toChar()) + part.url else ""
                             val label = part.name + if (part.size > 0) "  (" + humanSize(part.size) + ")" else ""
                             messages.add(Msg(false, label, kind = MKind.FILE, payload = dl))
                         }
                     }
                 }
-            } catch (e: Exception) {
-                note(e.message ?: "发送失败")
-            } finally {
-                sending = false
             }
         }
+        override fun onSay(text: String) { messages.add(Msg(false, text)) }
+        override fun onAsk(id: String, question: String, options: List<String>) {
+            val opts = if (options.isEmpty()) "" else "（选一个：" + options.joinToString(" / ") + "）"
+            messages.add(Msg(false, "❓ " + question + " " + opts))
+        }
+        override fun onStatus(msgIndex: Int, status: String) {
+            if (msgIndex in messages.indices) messages[msgIndex] = messages[msgIndex].copy(status = status)
+        }
+        override fun onError(msg: String) { note(msg) }
+        override fun onBusy(b: Boolean) { busy = b }
+    }
+
+    fun ask(prompt: String) {
+        val idx = messages.size
+        messages.add(Msg(true, prompt, status = "未读"))
+        engine.send(prompt, idx, listener)
     }
 
     fun sendText() {
         val t = input.trim()
-        if (t.isEmpty() || sending) return
+        if (t.isEmpty()) return
         input = ""
-        messages.add(Msg(true, t))
+        // ask() 内部会把自己这条消息加进列表并标记「未读」
         ask(t)
     }
 
@@ -280,7 +290,9 @@ private fun App(prefs: Prefs) {
                 } else {
                     "[ta（${prefs.myName}）用手机发来一个文件：$name ，存在电脑上：$remote 。需要就看，看完说一句。]"
                 }
-                ask(prompt)
+                val ix = messages.size
+                messages.add(Msg(true, "[附件] " + name, status = "未读"))
+                engine.send(prompt, ix, listener)
             } catch (e: Exception) {
                 note(e.message ?: "传不上去")
             } finally {
@@ -297,7 +309,8 @@ private fun App(prefs: Prefs) {
                 val bytes = withContext(Dispatchers.IO) { ctx.assets.open(s.file).use { it.readBytes() } }
                 messages.add(Msg(true, s.summary, kind = MKind.STICKER, payload = s.file))
                 val remote = Bridge.upload(prefs, "sticker.png", bytes)
-                ask("[ta（${prefs.myName}）发来一张表情包「${s.summary}」，文件在电脑上：$remote 。]")
+                val ix2 = messages.size
+                engine.send("[ta（${prefs.myName}）发来一张表情包「${s.summary}」，文件在电脑上：$remote 。]", ix2, listener)
             } catch (e: Exception) {
                 note(e.message ?: "表情包发不出去")
             } finally {
@@ -614,6 +627,14 @@ private fun MessageRow(m: Msg, prefs: Prefs) {
             if (m.kind == MKind.FILE) {
                 Spacer(Modifier.height(4.dp))
                 FileBubble(m)
+            }
+            if (m.fromMe && m.status.isNotEmpty()) {
+                Text(
+                    m.status,
+                    color = if (m.status == "已读") Color(0xFF23A55A) else TextMuted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 4.dp, end = 4.dp),
+                )
             }
             Text(
                 SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(m.at)),
@@ -968,7 +989,7 @@ private fun SettingsDialog(
                 }
                 Text("背景诊断：", color = TextDim, fontSize = 10.sp, modifier = Modifier.padding(top = 8.dp))
                 Text(BgDebug.line, color = TextMuted, fontSize = 10.sp, lineHeight = 14.sp)
-                Text("v2.7 · 支持文件下载", color = TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+                Text("v3.7 · 上传修复", color = TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
             }
         },
         confirmButton = {
