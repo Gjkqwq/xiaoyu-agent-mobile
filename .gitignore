@@ -1,0 +1,31 @@
+# 本地配置：含口令与 API Key，绝对不要提交
+配置.json
+配置.json.bak*
+
+# 私人数据
+记忆/对话/
+记忆/上传/
+记忆/产出/
+记忆/记忆区/日记/
+表情包/*.png
+表情包/*.jpg
+表情包/index.json
+穿透地址.txt
+
+# 大文件 / 构建产物
+server/bin/
+server/*.log
+server/*.err
+server/*.txt
+安卓工程/**/build/
+安卓工程/.gradle/
+安卓工程/.idea/
+安卓工程/local.properties
+*.apk
+*.jks
+*.keystore
+
+# 系统垃圾
+Thumbs.db
+desktop.ini
+.DS_Store

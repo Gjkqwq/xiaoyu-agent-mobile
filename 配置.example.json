@@ -1,0 +1,17 @@
+{
+  "port": 19401,
+  "token": "请改成一串你能记住、别人猜不到的随机字符（例如 openssl rand -hex 16 生成）",
+  "mode": "agent",
+  "provider": "deepseek-account",
+  "model": "deepseek-flash",
+  "apiKey": "",
+  "apiBase": "https://api.deepseek.com",
+  "permissionMode": "danger-full-access",
+  "timeoutMs": 300000,
+  "profileName": "phone",
+  "dshExe": "",
+  "dshEntry": "",
+  "localBaseUrl": "http://127.0.0.1:11434/v1",
+  "localContext": 8192,
+  "ollamaModels": ""
+}

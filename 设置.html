@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小鱼 · 设置</title>
+<style>
+  :root{--bg:#1e1f22;--panel:#2b2d31;--card:#313338;--field:#383a40;--blurple:#5865f2;
+        --blurple2:#4752c4;--text:#dbdee1;--muted:#949ba4;--green:#23a55a;--red:#f23f43;--yellow:#f0b232;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:860px;margin:0 auto;padding:26px 18px 70px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+  .logo{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#5865f2,#7bd1ff);
+        display:flex;align-items:center;justify-content:center;font-size:22px}
+  h1{font-size:19px;margin:0;font-weight:700;color:#fff}
+  .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  .card{background:var(--panel);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  .card h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 12px;font-weight:700}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  @media(max-width:680px){.grid,.grid3{grid-template-columns:1fr}}
+  label.f{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  input,select{width:100%;background:var(--field);border:1px solid transparent;border-radius:6px;
+        color:var(--text);padding:9px 11px;font:inherit;outline:none}
+  input:focus,select:focus{border-color:var(--blurple)}
+  input.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .row{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
+  button{background:var(--blurple);color:#fff;border:0;border-radius:6px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button:hover{background:var(--blurple2)}
+  button.ghost{background:var(--field);color:var(--text)}
+  button.ghost:hover{background:#43454b}
+  .pill{display:inline-flex;align-items:center;gap:6px;background:var(--card);border-radius:20px;padding:5px 12px;font-size:12px;color:var(--muted);margin:0 6px 6px 0}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .dot.ok{background:var(--green)} .dot.bad{background:var(--red)} .dot.warn{background:var(--yellow)}
+  .msg{margin-top:12px;font-size:12px;color:var(--muted);white-space:pre-wrap;word-break:break-all}
+  .msg.ok{color:var(--green)} .msg.bad{color:var(--red)}
+  .kv{display:grid;grid-template-columns:132px 1fr;gap:5px 12px;font-size:12px;color:var(--muted)}
+  .kv b{color:var(--text);font-weight:500;word-break:break-all}
+  .stickers{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .stickers img{width:52px;height:52px;object-fit:contain;background:var(--card);border-radius:8px}
+  .hint{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.8}
+  code{background:var(--card);padding:1px 6px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">🐟</div>
+    <div>
+      <h1>小鱼 · 手机服务设置</h1>
+      <div class="sub">改完点保存；端口/口令/模式 改完要重启服务（关窗口再双击 启动.cmd）</div>
+    </div>
+  </header>
+
+  <div class="card">
+    <h2>运行状态（这是当前真实在跑的）</h2>
+    <div>
+      <span class="pill"><span class="dot" id="d-dsh"></span>DSH <span id="s-dsh">…</span></span>
+      <span class="pill"><span class="dot" id="d-key"></span>API Key <span id="s-key">…</span></span>
+      <span class="pill"><span class="dot ok"></span>端口 <span id="s-port">…</span></span>
+    </div>
+    <div class="kv" id="statusKv" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <h2>模式与模型</h2>
+    <div class="grid">
+      <div>
+        <label class="f">模式</label>
+        <select id="mode">
+          <option value="agent">agent · 能操作电脑、能翻记忆</option>
+          <option value="chat">chat · 纯聊天（本地模型必须用这个）</option>
+        </select>
+      </div>
+      <div>
+        <label class="f">跑在哪</label>
+        <select id="provider">
+          <option value="deepseek-account">云端 DeepSeek（账号登录）</option>
+          <option value="ollama">本地 Ollama</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div>
+        <label class="f">模型</label>
+        <select id="model">
+          <optgroup label="云端">
+            <option value="deepseek-flash">deepseek-flash · 快，能看图</option>
+            <option value="deepseek-v4-pro">deepseek-v4-pro · 强，不支持看图</option>
+          </optgroup>
+          <optgroup label="本地">
+            <option value="qwen2.5:7b">qwen2.5:7b · 快，3-6 秒</option>
+            <option value="qwen2.5:14b">qwen2.5:14b · 更好聊（未装）</option>
+            <option value="glm4:9b">glm4:9b · 中文稳（未装）</option>
+          </optgroup>
+        </select>
+      </div>
+      <div>
+        <label class="f">本地地址（选本地时用）</label>
+        <input id="localBaseUrl" class="mono" placeholder="http://127.0.0.1:11434/v1">
+      </div>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div>
+        <label class="f">API Key（留空 = 用 DSH 登录的账号）</label>
+        <input id="apiKey" class="mono" type="password" placeholder="sk-...">
+      </div>
+      <div>
+        <label class="f">API 地址（查余额用）</label>
+        <input id="apiBase" class="mono" placeholder="https://api.deepseek.com">
+      </div>
+    </div>
+    <div class="row">
+      <button id="btnSave">保存</button>
+      <button class="ghost" id="btnTest">跑一句话试试</button>
+      <button class="ghost" id="btnBalance">查余额</button>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>服务</h2>
+    <div class="grid3">
+      <div>
+        <label class="f">端口</label>
+        <input id="port" class="mono" inputmode="numeric">
+      </div>
+      <div>
+        <label class="f">手机 App 口令</label>
+        <input id="token" class="mono">
+      </div>
+      <div>
+        <label class="f">权限模式</label>
+        <select id="permissionMode">
+          <option value="danger-full-access">完全控制电脑</option>
+          <option value="workspace-write">只能改包目录</option>
+          <option value="read-only">只读</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div>
+        <label class="f">DSH profile 名</label>
+        <input id="profileName" class="mono">
+      </div>
+      <div>
+        <label class="f">本地模型目录（Ollama）</label>
+        <input id="ollamaModels" class="mono" placeholder="D:\ollama-models">
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label class="f">DeepSeek Harness 路径（自动探测不到时手填）</label>
+      <input id="dshExe" class="mono" placeholder="E:\DeepseekHarness\DeepSeek Harness.exe">
+    </div>
+    <div class="hint">手机 App 里填：<code id="lanHint">http://&lt;本机IP&gt;:19401</code></div>
+  </div>
+
+  <div class="card">
+    <h2>记忆与表情包</h2>
+    <div class="kv" id="pathsKv"></div>
+    <div class="stickers" id="stickers"></div>
+  </div>
+
+  <div class="card">
+    <h2>怎么用</h2>
+    <div class="hint">
+      1. 双击包里的 <code>启动.cmd</code>，窗口别关<br>
+      2. 手机 App → 设置 → 服务地址填 <code id="lanHint2"></code>，口令照抄上面那串<br>
+      3. 换电脑：整个文件夹拷走，装好 Node.js + DeepSeek Harness，双击启动即可
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const setMsg = (t, cls) => { const m = $('msg'); m.textContent = t; m.className = 'msg ' + (cls || '') }
+const jget = async (u) => (await fetch(u)).json()
+
+async function loadStatus() {
+  try {
+    const s = await jget('/api/status')
+    $('d-dsh').className = 'dot ' + (s.dshOk ? 'ok' : 'bad')
+    $('s-dsh').textContent = s.dshOk ? '已找到' : '没找到'
+    $('d-key').className = 'dot ' + (s.keySet ? 'ok' : 'warn')
+    $('s-key').textContent = s.keySet ? '已设置' : '用账号登录'
+    $('s-port').textContent = s.port
+    $('statusKv').innerHTML = [
+      ['模式', s.mode || '-'],
+      ['模型', (s.provider || '') + ' / ' + (s.model || '')],
+      ['profile', s.profile || '-'],
+      ['对话记忆', (s.dialogDays || 0) + ' 天 / ' + (s.dialogTurns || 0) + ' 条'],
+      ['表情包', (s.stickers || 0) + ' 张'],
+      ['DSH 路径', s.dshExe || '未配置'],
+    ].map(([k, v]) => '<span>' + k + '</span><b>' + v + '</b>').join('')
+    $('lanHint').textContent = 'http://<本机IP>:' + s.port
+    $('lanHint2').textContent = 'http://<本机IP>:' + s.port
+  } catch (e) {
+    $('statusKv').innerHTML = '<span>状态读取失败</span><b>' + e.message + '</b>'
+  }
+}
+
+function ensureOption(sel, value) {
+  if (!value) return
+  if (!Array.from(sel.options).some((o) => o.value === value)) {
+    const o = document.createElement('option')
+    o.value = value
+    o.textContent = value + '（自定义）'
+    sel.appendChild(o)
+  }
+}
+
+async function loadConfig() {
+  try {
+    const r = await jget('/api/config')
+    const c = r.config || {}
+    $('mode').value = c.mode || 'agent'
+    $('provider').value = c.provider || 'deepseek-account'
+    ensureOption($('model'), c.model || 'deepseek-flash')
+    $('model').value = c.model || 'deepseek-flash'
+    $('localBaseUrl').value = c.localBaseUrl || ''
+    $('apiKey').value = c.apiKey || ''
+    $('apiBase').value = c.apiBase || ''
+    $('port').value = c.port || 19401
+    $('token').value = c.token || ''
+    $('permissionMode').value = c.permissionMode || 'danger-full-access'
+    $('profileName').value = c.profileName || 'phone'
+    $('ollamaModels').value = c.ollamaModels || ''
+    $('dshExe').value = c.dshExe || ''
+    const p = r.paths || {}
+    $('pathsKv').innerHTML = [
+      ['对话记录', p.chatLog ? p.chatLog.replace(/聊天记录$/, '对话') : '-'],
+      ['记忆区', p.memory || '-'],
+      ['自我调校', p.tune || '-'],
+      ['人设', p.persona || '-'],
+      ['表情包', p.stickerIndex || '-'],
+    ].map(([k, v]) => '<span>' + k + '</span><b>' + v + '</b>').join('')
+    try {
+      const idx = await jget('/media?f=index.json')
+      $('stickers').innerHTML = idx.slice(0, 30)
+        .map((x) => '<img src="/media?f=' + encodeURIComponent(x.file) + '" title="' + x.summary + '">')
+        .join('')
+    } catch (e) { /* 忽略 */ }
+  } catch (e) {
+    setMsg('配置读取失败：' + e.message, 'bad')
+  }
+}
+
+async function save() {
+  const body = {
+    mode: $('mode').value,
+    provider: $('provider').value,
+    model: $('model').value,
+    localBaseUrl: $('localBaseUrl').value.trim(),
+    apiBase: $('apiBase').value.trim(),
+    port: Number($('port').value) || 19401,
+    token: $('token').value.trim(),
+    permissionMode: $('permissionMode').value,
+    profileName: $('profileName').value.trim() || 'phone',
+    ollamaModels: $('ollamaModels').value.trim(),
+    dshExe: $('dshExe').value.trim(),
+  }
+  const k = $('apiKey').value.trim()
+  if (k && k.indexOf('…') < 0) body.apiKey = k
+  try {
+    const r = await jfetch('/api/config', body)
+    if (r.ok) { setMsg('已保存。模式/模型/端口/口令的改动，要关掉窗口重新双击 启动.cmd 才生效。', 'ok'); loadStatus() }
+    else setMsg('保存失败：' + (r.error || '未知'), 'bad')
+  } catch (e) { setMsg('保存失败：' + e.message, 'bad') }
+}
+
+async function jfetch(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })
+  return r.json()
+}
+
+async function test() {
+  setMsg('正在跑一句话…（云端几秒，本地十几秒）')
+  try {
+    const r = await jfetch('/api/test')
+    if (r.ok) setMsg('连上了 ✓ 她说：' + r.reply, 'ok')
+    else setMsg('失败：' + (r.error || ''), 'bad')
+  } catch (e) { setMsg('失败：' + e.message, 'bad') }
+}
+
+async function balance() {
+  setMsg('查余额中…')
+  try {
+    const r = await jget('/api/balance')
+    if (!r.ok) return setMsg('查不到：' + (r.error || r.status || ''), 'bad')
+    const info = (r.data && r.data.balance_infos && r.data.balance_infos[0]) || null
+    if (info) setMsg('余额 ' + info.total_balance + ' ' + info.currency + '（' + (r.data.is_available ? '可用' : '不可用') + '）', 'ok')
+    else setMsg(JSON.stringify(r.data).slice(0, 300))
+  } catch (e) { setMsg('失败：' + e.message, 'bad') }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  $('btnSave').addEventListener('click', save)
+  $('btnTest').addEventListener('click', test)
+  $('btnBalance').addEventListener('click', balance)
+  loadStatus()
+  loadConfig()
+})
+</script>
+</body>
+</html>
