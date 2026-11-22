@@ -37,7 +37,30 @@ const busy = new Set()
 // seq 用时间戳起步：服务重启也不会回退，App 记住的 since 永远追得上
 const jobs = { queue: [], running: null, inbox: [], seq: Date.now(), pending: 0 }
 let activeChild = null
-let stopRequestedAt = 0   // 最近一次主动打断的时间戳，用来区分“被打断”和“真出错”
+let stopRequestedAt = 0
+const OUTBOX_DIR = join(PATHS.root, '记忆', '收件箱')
+function persistOutbox(item) {
+  try {
+    if (!existsSync(OUTBOX_DIR)) mkdirSync(OUTBOX_DIR, { recursive: true })
+    const d = new Date(item.at || Date.now())
+    const f = join(OUTBOX_DIR, d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + '.jsonl')
+    appendFileSync(f, JSON.stringify(item) + '\n', 'utf8')
+  } catch {}
+}
+function loadOutbox() {
+  try {
+    if (!existsSync(OUTBOX_DIR)) return []
+    const files = readdirSync(OUTBOX_DIR).filter((f) => f.endsWith('.jsonl')).sort().slice(-3)
+    const out = []
+    for (const f of files) {
+      for (const line of readFileSync(join(OUTBOX_DIR, f), 'utf8').split('\n')) {
+        if (!line.trim()) continue
+        try { out.push(JSON.parse(line)) } catch {}
+      }
+    }
+    return out.slice(-100)
+  } catch { return [] }
+}   // 最近一次主动打断的时间戳，用来区分“被打断”和“真出错”
 const children = new Set() // 我们 spawn 过的所有 dsh 子进程
 
 /* ── 中途提问：她卡在「要 ta 决定」的地方时，停下来问一句 ──
@@ -60,6 +83,13 @@ function killTree(child) {
 }
 
 /** 把工具调用翻译成人话，给手机上的状态气泡用 */
+function pushOut(item) {
+  if (!item.at) item.at = Date.now()
+  jobs.inbox.push(item)
+  persistOutbox(item)
+  if (jobs.inbox.length > 200) jobs.inbox = jobs.inbox.slice(-200)
+}
+
 function describeTool(tool, input) {
   const t = String(tool || '')
   const inp = input || {}
@@ -99,7 +129,7 @@ async function pump(cfg) {
     appendSharedLog('小鱼', finalText || '[表情]')
     log('←', out.sessionId, Math.round((Date.now() - t0) / 1000) + 's', (finalText || '[表情]').slice(0, 50))
     jobs.seq += 1
-    jobs.inbox.push({
+    pushOut({
       seq: jobs.seq,
       id: job.id,
       reply: finalText,
@@ -111,7 +141,7 @@ async function pump(cfg) {
     const stopped = String(e.message || '').includes('已打断') || job.stopped
     log(stopped ? '· 已打断' : '!', String(e.message).slice(0, 150))
     jobs.seq += 1
-    jobs.inbox.push({
+    pushOut({
       seq: jobs.seq,
       id: job.id,
       reply: stopped ? '（停下了，你说。）' : '⚠️ ' + String(e.message).slice(0, 300),
@@ -649,7 +679,7 @@ const server = createServer(async (req, res) => {
     const id = 'q' + askSeq + '-' + Date.now().toString(36)
     asks.set(id, { id, question, options, answer: null, at: Date.now(), done: false })
     jobs.seq += 1
-    jobs.inbox.push({
+    pushOut({
       seq: jobs.seq,
       id,
       type: 'question',
@@ -719,7 +749,7 @@ const server = createServer(async (req, res) => {
     const text = String(body.text || '').trim()
     if (!text) return json(res, 400, { error: 'text 是空的' })
     jobs.seq += 1
-    jobs.inbox.push({ seq: jobs.seq, id: 'n' + jobs.seq, reply: text, parts: [], sessionId: '', type: body.kind === 'step' ? 'step' : 'say' })
+    pushOut({ seq: jobs.seq, id: 'n' + jobs.seq, reply: text, parts: [], sessionId: '', type: body.kind === 'step' ? 'step' : 'say' })
     if (jobs.inbox.length > 50) jobs.inbox = jobs.inbox.slice(-50)
     appendSharedLog('小鱼', text)
     log('· 她说', text.slice(0, 40))
@@ -823,6 +853,12 @@ const server = createServer(async (req, res) => {
     appendSharedLog('ta', text)
     try {
       let out = await runChat(cfg, asked, text)
+      // 已读不回：她可以输出 [[沉默]]，表示不想说话
+      if (/\[\[沉默\]\]/.test(out.reply)) {
+        appendSharedLog('小鱼', '（已读不回）')
+        log('· 已读不回')
+        return json(res, 200, { reply: '', parts: [], sessionId: out.sessionId, silent: true })
+      }
       let split = splitParts(out.reply, cfg)
       // 正文和附件都空 = 她只写了个解析不了的标记，重来一次（只重试一次）
       if (!split.text && split.parts.length === 0) {
@@ -870,7 +906,41 @@ process.on('SIGINT', () => bye('SIGINT'))
 process.on('SIGBREAK', () => bye('SIGBREAK'))
 process.on('SIGHUP', () => bye('SIGHUP'))
 
+let lastThink = 0
+function scheduleThink() {
+  setInterval(() => {
+    const now = new Date()
+    const h = now.getHours(), m = now.getMinutes()
+    const peak = [8, 12, 20].includes(h) && m === 0
+    const p = peak ? 0.85 : 0.04           // 整点高概率；其余时刻小概率随机
+    if (Date.now() - lastThink < 60 * 60 * 1000) return   // 至少间隔 1 小时
+    if (Math.random() > p) return
+    lastThink = Date.now()
+    const cfg = loadConfig()
+    if (!cfg.dshExe) return
+    log('· 碎碎念时间到了，叫醒她')
+    spawn('node', [join(PATHS.root, 'server', 'think.mjs')], { cwd: PATHS.root, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).stdout.on('data', (d) => {
+      const text = String(d).trim()
+      if (!text) return
+      jobs.seq += 1
+      pushOut({ seq: jobs.seq, id: 't' + jobs.seq, reply: text, parts: [], sessionId: '', type: 'say' })
+      appendSharedLog('小鱼', text)
+      log('· 碎碎念发出', text.slice(0, 40))
+    })
+  }, 60 * 1000)
+}
+
 const startCfg = loadConfig()
+;(() => {
+  const old = loadOutbox()
+  if (old.length) {
+    const maxSeq = Math.max(...old.map((x) => Number(x.seq) || 0))
+    if (maxSeq > jobs.seq) jobs.seq = maxSeq
+    jobs.inbox = old
+    log('· 收件箱恢复了 ' + old.length + ' 条历史')
+  }
+})()
+scheduleThink()
 ensureOllama(startCfg).finally(() => {
 server.listen(startCfg.port, '0.0.0.0', () => {
   log('小鱼手机服务已启动  http://0.0.0.0:' + startCfg.port)

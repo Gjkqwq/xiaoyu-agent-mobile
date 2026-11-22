@@ -29,3 +29,7 @@ server/*.txt
 Thumbs.db
 desktop.ini
 .DS_Store
+记忆/收件箱/
+记忆/情绪.json
+记忆/相识.json
+server/.app-state.json

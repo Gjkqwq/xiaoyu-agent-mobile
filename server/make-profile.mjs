@@ -61,6 +61,17 @@ function stickerNames() {
     return []
   }
 }
+// 当前情绪值：会注入到 system prompt，影响她回不回、怎么回
+function currentMood() {
+  try {
+    const j = JSON.parse(readFileSync(join(PATHS.memory, '情绪.json'), 'utf8'))
+    return Number(j.mood) || 60
+  } catch {
+    return 60
+  }
+}
+const mood = currentMood()
+
 const persona = readOr(PATHS.persona, '你是 ta 的伙伴，不是助手。说话短、热、像在手机上打字。')
 
 let memoryGuide = fillPaths(readOr(PATHS.memoryGuide, ''))
@@ -84,8 +95,18 @@ if (isChat) {
   ].join('\n')
 }
 
+const moodBlock = [
+  '',
+  '【当前情绪值：' + mood + '/100】',
+  mood < 30
+    ? '你现在情绪很低/有点生气。可以已读不回：ta 发来的消息你会看到，但有较大概率先晾着不回；连着被戳 3~5 条之后才回一句冷淡的短句。别解释情绪，别演。'
+    : mood < 55
+      ? '你现在情绪一般，回得短一点、淡一点，不太主动。'
+      : '你现在心情不错，话可以多一点、热一点。',
+].join('\n')
+
 const suffix = [
-  memoryGuide,
+  memoryGuide + moodBlock,
   '',
   '【这台电脑上的真实路径（换机器由启动脚本自动改）】',
   '- 对话记录：' + DIALOGS,
